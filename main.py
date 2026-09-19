@@ -5,39 +5,49 @@ from fastapi import FastAPI, HTTPException
 
 app = FastAPI()
 
-# 🔴 अपनी Google YouTube API Key यहाँ इनवर्टेड कॉमा (" ") के अंदर डालें
+# 🔴 अपनी वही Google API Key यहाँ रखें
 YOUTUBE_API_KEY = "AIzaSyCqpiPw4G0s2WJykCMWoVWKI99kcIfBpNE"
 
 def extract_stream_direct(video_id: str):
-    # iOS / Safari Web Client: बोट डिटेक्शन से सुरक्षित और डायरेक्ट ऑडियो लिंक
-    ydl_opts = {
-        'format': 'ba/b',
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'safari']
+    yt_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    # YouTube बॉट ब्लॉकिंग से बचने के लिए अलग-अलग क्लाइंट्स
+    client_configs = [
+        ['android_tv'],
+        ['android'],
+        ['web_creator'],
+        ['ios', 'safari']
+    ]
+
+    for client in client_configs:
+        ydl_opts = {
+            'format': 'ba/b',
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': client
+                }
             }
         }
-    }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(yt_url, download=False)
+                
+                # डायरेक्ट ऑडियो लिंक खोजना
+                if 'url' in info:
+                    return info['url']
+                
+                if 'formats' in info:
+                    for f in reversed(info['formats']):
+                        if f.get('acodec') != 'none' and f.get('vcodec') == 'none':
+                            return f.get('url')
+        except Exception as e:
+            print(f"Client {client} failed: {e}")
+            continue
 
-    yt_url = f"https://www.youtube.com/watch?v={video_id}"
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(yt_url, download=False)
-            
-            # डायरेक्ट ऑडियो URL निकालना
-            stream_url = info.get('url')
-            if not stream_url and 'formats' in info:
-                for f in reversed(info['formats']):
-                    if f.get('acodec') != 'none' and f.get('vcodec') == 'none':
-                        stream_url = f.get('url')
-                        break
-            return stream_url
-    except Exception as e:
-        print(f"Extraction error: {e}")
-        return None
+    return None
 
 @app.get("/get-audio")
 def get_audio(query: str):
@@ -54,7 +64,6 @@ def get_audio(query: str):
     try:
         res = requests.get(search_url, params=params, timeout=6).json()
         
-        # Google API की तरफ से कोई एरर चेक करना
         if "error" in res:
             raise HTTPException(status_code=400, detail=f"Google API Error: {res['error'].get('message')}")
         
@@ -70,13 +79,12 @@ def get_audio(query: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {e}")
 
-    # 2. इन-हाउस इंजन से सीधा ऑडियो लिंक निकालना
+    # 2. मल्टीपल क्लाइंट्स से सीधा ऑडियो निकालना
     stream_url = extract_stream_direct(video_id)
 
     if not stream_url:
         raise HTTPException(status_code=500, detail="Audio extraction failed")
 
-    # Alexa के लिए फाइनल रिस्पॉन्स
     return {
         "status": "success",
         "title": title,
