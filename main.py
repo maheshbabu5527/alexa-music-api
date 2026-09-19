@@ -1,58 +1,62 @@
 from fastapi import FastAPI, HTTPException
-import yt_dlp
+import requests
 
 app = FastAPI()
 
-def get_stream(query: str):
-    # Android Music & Web Creator Client (YouTube Music Native Engine)
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
-        'default_search': 'ytsearch1:',
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android_music', 'android', 'web_creator'],
-                'player_skip': ['configs']
-            }
-        }
+INVIDIOUS_NODES = [
+    "https://inv.nadeko.net",
+    "https://invidious.nerdvpn.de",
+    "https://invidious.jing.rocks",
+    "https://inv.tux.pizza"
+]
+
+def fetch_youtube_stream(query: str):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            res = ydl.extract_info(query, download=False)
-            if 'entries' in res and len(res['entries']) > 0:
-                video = res['entries'][0]
-            else:
-                video = res
-
-            stream_url = video.get('url')
+    
+    for base in INVIDIOUS_NODES:
+        try:
+            # 1. सर्च करें
+            search_url = f"{base}/api/v1/search?q={requests.utils.quote(query)}&type=video"
+            s_res = requests.get(search_url, headers=headers, timeout=4)
+            if s_res.status_code != 200:
+                continue
             
-            # अगर सीधा URL न मिले तो formats लिस्ट से ऑडियो निकालें
-            if not stream_url and 'formats' in video:
-                audio_formats = [
-                    f for f in video['formats'] 
-                    if f.get('acodec') != 'none' and f.get('url')
-                ]
-                if audio_formats:
-                    # सबसे अच्छी क्वालिटी का ऑडियो URL
-                    stream_url = audio_formats[-1]['url']
+            videos = s_res.json()
+            if not videos:
+                continue
 
-            if stream_url:
-                return {
-                    "status": "success",
-                    "title": video.get('title', query),
-                    "stream_url": stream_url
-                }
-    except Exception as e:
-        print(f"Extraction error: {e}")
+            video_id = videos[0].get("videoId")
+            title = videos[0].get("title", query)
+
+            # 2. ऑडियो स्ट्रीम यूआरएल निकालें
+            vid_url = f"{base}/api/v1/videos/{video_id}"
+            v_res = requests.get(vid_url, headers=headers, timeout=4)
+            if v_res.status_code != 200:
+                continue
+
+            v_data = v_res.json()
+            formats = v_data.get("adaptiveFormats", [])
+
+            # ऑडियो फॉर्मेट्स ढूंढें (m4a या opus)
+            for f in formats:
+                if f.get("type", "").startswith("audio/"):
+                    stream_url = f.get("url")
+                    if stream_url:
+                        return {
+                            "status": "success",
+                            "title": title,
+                            "stream_url": stream_url
+                        }
+        except Exception:
+            continue
 
     return None
 
 @app.get("/get-audio")
 def get_audio(query: str):
-    result = get_stream(query)
-    if not result or not result.get("stream_url"):
+    data = fetch_youtube_stream(query)
+    if not data or not data.get("stream_url"):
         raise HTTPException(status_code=500, detail="Audio stream not found")
-    return result
+    return data
