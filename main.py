@@ -1,74 +1,88 @@
 from fastapi import FastAPI, HTTPException
 import requests
+import json
 
 app = FastAPI()
 
-# एक्टिव YouTube API एंडपॉइंट्स
-ENGINES = [
-    {"type": "piped", "url": "https://pipedapi.kavin.rocks"},
-    {"type": "piped", "url": "https://api.piped.privacydev.net"},
-    {"type": "invidious", "url": "https://inv.nadeko.net"},
-    {"type": "invidious", "url": "https://invidious.nerdvpn.de"}
-]
-
-def search_and_get_stream(query: str):
+def fetch_direct_youtube_audio(query: str):
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Content-Type": "application/json"
     }
 
-    for engine in ENGINES:
-        base = engine["url"]
-        engine_type = engine["type"]
+    # 1. YouTube Official Web Search API
+    search_url = "https://www.youtube.com/youtubei/v1/search?prettyPrint=false"
+    payload = {
+        "context": {
+            "client": {
+                "clientName": "WEB",
+                "clientVersion": "2.20240101.00.00",
+                "hl": "en",
+                "gl": "IN"
+            }
+        },
+        "query": query
+    }
 
-        try:
-            if engine_type == "piped":
-                # 1. Piped से सर्च करें
-                s_url = f"{base}/search?q={requests.utils.quote(query)}&filter=music_songs"
-                s_res = requests.get(s_url, headers=headers, timeout=4).json()
-                items = s_res.get("items", [])
-                if not items:
-                    continue
+    try:
+        s_res = requests.post(search_url, json=payload, headers=headers, timeout=6).json()
+        sections = s_res.get("contents", {}).get("twoColumnSearchResultsRenderer", {}).get("primaryContents", {}).get("sectionListRenderer", {}).get("contents", [])
+        
+        video_id = None
+        title = query
 
-                video_id = items[0]["url"].split("v=")[-1]
-                title = items[0].get("title", query)
+        for sec in sections:
+            items = sec.get("itemSectionRenderer", {}).get("contents", [])
+            for it in items:
+                v = it.get("videoRenderer")
+                if v and "videoId" in v:
+                    video_id = v["videoId"]
+                    title = v.get("title", {}).get("runs", [{}])[0].get("text", query)
+                    break
+            if video_id:
+                break
 
-                # 2. Piped से ऑडियो स्ट्रीम निकालें
-                stream_res = requests.get(f"{base}/streams/{video_id}", headers=headers, timeout=4).json()
-                audio_streams = stream_res.get("audioStreams", [])
-                if audio_streams:
-                    return {
-                        "status": "success",
-                        "title": title,
-                        "stream_url": audio_streams[0]["url"]
-                    }
+        if not video_id:
+            return None
 
-            elif engine_type == "invidious":
-                # 1. Invidious से सर्च करें
-                s_url = f"{base}/api/v1/search?q={requests.utils.quote(query)}&type=video"
-                s_res = requests.get(s_url, headers=headers, timeout=4).json()
-                if not s_res:
-                    continue
+        # 2. YouTube Official Player API (Android Client Emulation - No bot block)
+        player_url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"
+        player_payload = {
+            "context": {
+                "client": {
+                    "clientName": "ANDROID",
+                    "clientVersion": "19.05.36",
+                    "androidSdkVersion": 30,
+                    "hl": "en",
+                    "gl": "IN"
+                }
+            },
+            "videoId": video_id
+        }
 
-                video_id = s_res[0].get("videoId")
-                title = s_res[0].get("title", query)
+        p_res = requests.post(player_url, json=player_payload, headers=headers, timeout=6).json()
+        streaming_data = p_res.get("streamingData", {})
+        formats = streaming_data.get("adaptiveFormats", []) + streaming_data.get("formats", [])
 
-                # 2. Invidious से ऑडियो स्ट्रीम निकालें
-                v_res = requests.get(f"{base}/api/v1/videos/{video_id}", headers=headers, timeout=4).json()
-                for f in v_res.get("adaptiveFormats", []):
-                    if f.get("type", "").startswith("audio/"):
-                        return {
-                            "status": "success",
-                            "title": title,
-                            "stream_url": f.get("url")
-                        }
-        except Exception:
-            continue
+        # ऑडियो स्ट्रीम ढूंढें (जिसमें url मौजूद हो)
+        for f in formats:
+            mime = f.get("mimeType", "")
+            if "audio" in mime and "url" in f:
+                return {
+                    "status": "success",
+                    "title": title,
+                    "stream_url": f["url"]
+                }
+
+    except Exception as e:
+        print(f"Direct Innertube Error: {e}")
 
     return None
 
 @app.get("/get-audio")
 def get_audio(query: str):
-    data = search_and_get_stream(query)
+    data = fetch_direct_youtube_audio(query)
     if not data or not data.get("stream_url"):
         raise HTTPException(status_code=500, detail="Song stream not found")
     return data
