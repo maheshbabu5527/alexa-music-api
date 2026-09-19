@@ -5,53 +5,39 @@ from fastapi import FastAPI, HTTPException
 
 app = FastAPI()
 
-# 🔴 अपनी वही Google API Key यहाँ रखें
+# 🔴 अपनी वही Google API Key यहाँ इनवर्टेड कॉमा (" ") के अंदर डालें
 YOUTUBE_API_KEY = "AIzaSyCqpiPw4G0s2WJykCMWoVWKI99kcIfBpNE"
 
 def extract_stream_direct(video_id: str):
     yt_url = f"https://www.youtube.com/watch?v={video_id}"
 
-    # YouTube बॉट ब्लॉकिंग से बचने के लिए अलग-अलग क्लाइंट्स
-    client_configs = [
-        ['android_tv'],
-        ['android'],
-        ['web_creator'],
-        ['ios', 'safari']
-    ]
+    ydl_opts = {
+        'format': 'ba/b',
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+        'cookiefile': 'cookies.txt',  # GitHub में अपलोड की गई कुकी फ़ाइल
+    }
 
-    for client in client_configs:
-        ydl_opts = {
-            'format': 'ba/b',
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': client
-                }
-            }
-        }
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(yt_url, download=False)
-                
-                # डायरेक्ट ऑडियो लिंक खोजना
-                if 'url' in info:
-                    return info['url']
-                
-                if 'formats' in info:
-                    for f in reversed(info['formats']):
-                        if f.get('acodec') != 'none' and f.get('vcodec') == 'none':
-                            return f.get('url')
-        except Exception as e:
-            print(f"Client {client} failed: {e}")
-            continue
-
-    return None
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(yt_url, download=False)
+            
+            # डायरेक्ट ऑडियो स्ट्रीम लिंक निकालना
+            stream_url = info.get('url')
+            if not stream_url and 'formats' in info:
+                for f in reversed(info['formats']):
+                    if f.get('acodec') != 'none' and f.get('vcodec') == 'none':
+                        stream_url = f.get('url')
+                        break
+            return stream_url
+    except Exception as e:
+        print(f"Extraction error: {e}")
+        return None
 
 @app.get("/get-audio")
 def get_audio(query: str):
-    # 1. Google YouTube API v3 से वीडियो खोजना
+    # 1. Google YouTube API से सर्च
     search_url = "https://www.googleapis.com/youtube/v3/search"
     params = {
         "part": "snippet",
@@ -79,7 +65,7 @@ def get_audio(query: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {e}")
 
-    # 2. मल्टीपल क्लाइंट्स से सीधा ऑडियो निकालना
+    # 2. कुकीज़ के ज़रिए YouTube से ऑडियो लिंक निकालना
     stream_url = extract_stream_direct(video_id)
 
     if not stream_url:
