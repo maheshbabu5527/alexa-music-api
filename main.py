@@ -14,55 +14,61 @@ def home():
 
 @app.get("/stream/{video_id}")
 def stream_audio(video_id: str):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+    yt_url = f"https://www.youtube.com/watch?v={video_id}"
 
-    # 1. उच्च अपटाइम वाले सत्यापित Piped API इंस्टेंसेस
-    piped_gateways = [
-        "https://pipedapi.adminforge.de",
-        "https://pipedapi.kavin.rocks",
-        "https://api.piped.yt",
-        "https://pipedapi.drgns.space"
+    # 1. Cobalt API Instances (YouTube ऑडियो के लिए सबसे तेज़ और सुरक्षित)
+    cobalt_nodes = [
+        "https://api.cobalt.tools",
+        "https://cobalt.api.sc-0.fun",
+        "https://cobalt.canine.tools"
     ]
 
-    for base in piped_gateways:
+    cobalt_headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+
+    cobalt_payload = {
+        "url": yt_url,
+        "downloadMode": "audio",
+        "audioFormat": "mp3"
+    }
+
+    for node in cobalt_nodes:
         try:
-            url = f"{base}/streams/{video_id}"
-            res = requests.get(url, headers=headers, timeout=6)
+            res = requests.post(f"{node}/", json=cobalt_payload, headers=cobalt_headers, timeout=5)
             if res.status_code == 200:
                 data = res.json()
-                audio_streams = data.get("audioStreams", [])
-                if audio_streams:
-                    # सबसे पहला वैध ऑडियो स्ट्रीम URL
-                    for a in audio_streams:
-                        if a.get("url"):
-                            return RedirectResponse(url=a["url"], status_code=302)
+                # अगर डायरेक्ट ऑडियो लिंक मिला
+                if data.get("url"):
+                    return RedirectResponse(url=data["url"], status_code=302)
+                # कुछ इंस्टेंस stream URL लौटाते हैं
+                if data.get("stream"):
+                    return RedirectResponse(url=data["stream"], status_code=302)
         except Exception:
             continue
 
-    # 2. बैकअप: Invidious API इंस्टेंस
-    invidious_gateways = [
-        "https://invidious.adminforge.de",
-        "https://inv.nadeko.net"
+    # 2. बैकअप: डायरेक्ट इनविडियस ऑडियो CDN रिले
+    invidious_backup = [
+        "https://yt.artemislena.eu",
+        "https://invidious.jing.rocks"
     ]
-
-    for base in invidious_gateways:
+    for inv in invidious_backup:
         try:
-            url = f"{base}/api/v1/videos/{video_id}"
-            res = requests.get(url, headers=headers, timeout=6)
-            if res.status_code == 200:
-                data = res.json()
-                for item in data.get("adaptiveFormats", []):
-                    if "audio" in item.get("type", "").lower() and item.get("url"):
-                        u = item["url"]
+            r = requests.get(f"{inv}/api/v1/videos/{video_id}", timeout=5)
+            if r.status_code == 200:
+                formats = r.json().get("adaptiveFormats", [])
+                for f in formats:
+                    if "audio" in f.get("type", "").lower() and f.get("url"):
+                        u = f["url"]
                         if u.startswith("/"):
-                            u = f"{base}{u}"
+                            u = f"{inv}{u}"
                         return RedirectResponse(url=u, status_code=302)
         except Exception:
             continue
 
-    raise HTTPException(status_code=500, detail="Audio mirror connection timeout. Please retry.")
+    raise HTTPException(status_code=500, detail="Unable to fetch audio stream. Please retry.")
 
 @app.get("/get-audio")
 def get_audio(request: Request, query: str):
