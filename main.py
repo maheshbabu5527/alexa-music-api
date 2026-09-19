@@ -4,27 +4,34 @@ import requests
 
 app = FastAPI()
 
-def get_youtube_audio(query: str):
-    # 1. YouTube Android TV / VR Client (बॉट डिटेक्शन बाईपास)
+def get_stream(query: str):
+    # 1. तगड़ा कॉन्फ़िगरेशन: Android TV & iOS Music Client Emulation
+    # YouTube को लगता है कि यह Smart TV या Official Music App है
     ydl_opts = {
-        'format': 'bestaudio/ba/b',
-        'noplaylist': True,
+        'format': 'bestaudio[ext=m4a]/bestaudio/best',
         'quiet': True,
+        'no_warnings': True,
+        'noplaylist': True,
         'default_search': 'ytsearch1:',
         'extractor_args': {
             'youtube': {
-                'player_client': ['tv_downgraded', 'android_vr', 'web_creator']
+                'player_client': ['tv_embedded', 'tv', 'ios'],
+                'player_skip': ['webpage', 'configs'],
             }
+        },
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (SmartHub; SMART-TV; U; Linux/SmartTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
         }
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(query, download=False)
-            if 'entries' in info and len(info['entries']) > 0:
-                video = info['entries'][0]
+            res = ydl.extract_info(query, download=False)
+            if 'entries' in res and len(res['entries']) > 0:
+                video = res['entries'][0]
             else:
-                video = info
+                video = res
 
             stream_url = video.get('url')
             if stream_url:
@@ -34,44 +41,39 @@ def get_youtube_audio(query: str):
                     "stream_url": stream_url
                 }
     except Exception as e:
-        print(f"yt-dlp TV bypass failed: {e}")
+        print(f"Native TV client failed: {e}")
 
-    # 2. फ़ॉलबैक: YouTube सर्च + Cobalt / Invidious API
-    try:
-        # YouTube से वीडियो सर्च
-        search_api = f"https://invidious.nerdvpn.de/api/v1/search?q={requests.utils.quote(query)}&type=video"
-        s_res = requests.get(search_api, timeout=5).json()
-
-        if s_res and len(s_res) > 0:
-            vid_id = s_res[0].get("videoId")
-            vid_title = s_res[0].get("title", query)
-
-            # Cobalt API से सीधा YouTube ऑडियो स्ट्रीम लिंक
-            cobalt_payload = {
-                "url": f"https://www.youtube.com/watch?v={vid_id}",
-                "downloadMode": "audio"
-            }
-            c_res = requests.get(
-                f"https://invidious.nerdvpn.de/api/v1/videos/{vid_id}",
-                timeout=5
+    # 2. सेकंड लेयर बैकअप: Piped API (डिसेंट्रलाइज्ड YouTube म्यूजिक गेटवे)
+    piped_gateways = [
+        "https://pipedapi.kavin.rocks",
+        "https://api.piped.privacydev.net"
+    ]
+    for gateway in piped_gateways:
+        try:
+            s_req = requests.get(
+                f"{gateway}/search?q={requests.utils.quote(query)}&filter=music_songs",
+                timeout=4
             ).json()
-
-            formats = c_res.get("adaptiveFormats", [])
-            for f in formats:
-                if "audio" in f.get("type", ""):
+            items = s_req.get("items", [])
+            if items:
+                v_id = items[0]["url"].split("v=")[-1]
+                v_title = items[0].get("title", query)
+                st_req = requests.get(f"{gateway}/streams/{v_id}", timeout=4).json()
+                audios = st_req.get("audioStreams", [])
+                if audios:
                     return {
                         "status": "success",
-                        "title": vid_title,
-                        "stream_url": f.get("url")
+                        "title": v_title,
+                        "stream_url": audios[0]["url"]
                     }
-    except Exception as e:
-        print(f"Fallback bypass failed: {e}")
+        except Exception:
+            continue
 
     return None
 
 @app.get("/get-audio")
 def get_audio(query: str):
-    data = get_youtube_audio(query)
-    if not data or not data.get("stream_url"):
-        raise HTTPException(status_code=500, detail="YouTube stream not found")
-    return data
+    result = get_stream(query)
+    if not result or not result.get("stream_url"):
+        raise HTTPException(status_code=500, detail="Audio stream not found")
+    return result
