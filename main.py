@@ -12,63 +12,98 @@ YOUTUBE_API_KEY = "AIzaSyCqpiPw4G0s2WJykCMWoVWKI99kcIfBpNE"
 def home():
     return {"status": "online", "message": "Alexa Universal Music API Ready!"}
 
-@app.get("/stream/{video_id}")
-def stream_audio(video_id: str):
+def get_direct_audio_url(video_id: str):
     yt_url = f"https://www.youtube.com/watch?v={video_id}"
 
-    # 1. Cobalt API Instances (YouTube ऑडियो के लिए सबसे तेज़ और सुरक्षित)
-    cobalt_nodes = [
-        "https://api.cobalt.tools",
-        "https://cobalt.api.sc-0.fun",
-        "https://cobalt.canine.tools"
-    ]
+    # Engine 1: Y2Mate Cloud Audio Gateway
+    try:
+        y2_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Referer": "https://www.y2mate.com/",
+            "Origin": "https://www.y2mate.com",
+            "X-Requested-With": "XMLHttpRequest"
+        }
+        res = requests.post(
+            "https://www.y2mate.com/mates/analyzeV2/ajax",
+            data={"k_query": yt_url, "k_page": "home", "hl": "en", "q_auto": "0"},
+            headers=y2_headers,
+            timeout=7
+        ).json()
 
-    cobalt_headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
+        if res.get("status") == "ok":
+            links = res.get("links", {})
+            mp3_links = links.get("mp3", {})
+            k_key = None
+            for item in mp3_links.values():
+                k_key = item.get("k")
+                if k_key:
+                    break
 
-    cobalt_payload = {
-        "url": yt_url,
-        "downloadMode": "audio",
-        "audioFormat": "mp3"
-    }
+            if not k_key:
+                audio_links = links.get("audio", {})
+                for item in audio_links.values():
+                    k_key = item.get("k")
+                    if k_key:
+                        break
 
-    for node in cobalt_nodes:
-        try:
-            res = requests.post(f"{node}/", json=cobalt_payload, headers=cobalt_headers, timeout=5)
-            if res.status_code == 200:
-                data = res.json()
-                # अगर डायरेक्ट ऑडियो लिंक मिला
-                if data.get("url"):
-                    return RedirectResponse(url=data["url"], status_code=302)
-                # कुछ इंस्टेंस stream URL लौटाते हैं
-                if data.get("stream"):
-                    return RedirectResponse(url=data["stream"], status_code=302)
-        except Exception:
-            continue
+            if k_key:
+                conv = requests.post(
+                    "https://www.y2mate.com/mates/convertV2/index",
+                    data={"vid": video_id, "k": k_key},
+                    headers=y2_headers,
+                    timeout=8
+                ).json()
+                if conv.get("status") == "ok" and conv.get("dlink"):
+                    return conv["dlink"]
+    except Exception:
+        pass
 
-    # 2. बैकअप: डायरेक्ट इनविडियस ऑडियो CDN रिले
-    invidious_backup = [
-        "https://yt.artemislena.eu",
-        "https://invidious.jing.rocks"
-    ]
-    for inv in invidious_backup:
-        try:
-            r = requests.get(f"{inv}/api/v1/videos/{video_id}", timeout=5)
-            if r.status_code == 200:
-                formats = r.json().get("adaptiveFormats", [])
-                for f in formats:
-                    if "audio" in f.get("type", "").lower() and f.get("url"):
-                        u = f["url"]
-                        if u.startswith("/"):
-                            u = f"{inv}{u}"
-                        return RedirectResponse(url=u, status_code=302)
-        except Exception:
-            continue
+    # Engine 2: YT1s Dedicated Audio Resolver
+    try:
+        yt1s_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Referer": "https://yt1s.com/",
+            "Origin": "https://yt1s.com"
+        }
+        res = requests.post(
+            "https://yt1s.com/api/ajaxSearch/index",
+            data={"q": yt_url, "vt": "mp3"},
+            headers=yt1s_headers,
+            timeout=7
+        ).json()
 
-    raise HTTPException(status_code=500, detail="Unable to fetch audio stream. Please retry.")
+        if res.get("status") == "ok":
+            links = res.get("links", {})
+            mp3_dict = links.get("mp3", {})
+            k_key = None
+            for item in mp3_dict.values():
+                k_key = item.get("k")
+                if k_key:
+                    break
+
+            if k_key:
+                conv = requests.post(
+                    "https://yt1s.com/api/ajaxConvert/index",
+                    data={"vid": video_id, "k": k_key},
+                    headers=yt1s_headers,
+                    timeout=8
+                ).json()
+                if conv.get("status") == "ok" and conv.get("dlink"):
+                    return conv["dlink"]
+    except Exception:
+        pass
+
+    return None
+
+@app.get("/stream/{video_id}")
+def stream_audio(video_id: str):
+    audio_stream_url = get_direct_audio_url(video_id)
+
+    if audio_stream_url:
+        # Alexa और ब्राउज़र को सीधे लाइव MP3 ऑडियो लिंक पर भेजें
+        return RedirectResponse(url=audio_stream_url, status_code=302)
+
+    raise HTTPException(status_code=500, detail="Audio conversion service is currently busy. Please retry.")
 
 @app.get("/get-audio")
 def get_audio(request: Request, query: str):
@@ -103,7 +138,7 @@ def get_audio(request: Request, query: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {e}")
 
-    # Alexa के लिए सीधा स्ट्रीमिंग पाथ
+    # Alexa के लिए स्ट्रीमिंग एंडपॉइंट
     base_url = str(request.base_url).rstrip("/")
     stream_url = f"{base_url}/stream/{video_id}"
 
